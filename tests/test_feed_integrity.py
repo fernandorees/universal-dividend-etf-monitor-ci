@@ -151,6 +151,29 @@ class TestOfflineFeedIntegrity(unittest.TestCase):
                         last_complete_session=self.bars[-1].session
                     )
 
+    def test_provider_identifiers_are_bounded_and_log_safe(self):
+        # Untrusted claimed source labels must not inject logs/paths or huge
+        # strings into local audit metadata. This does not authenticate feeds.
+        for bad in (
+            None, True, 123, "", " A ", "A B", "A\nB", "A\rB",
+            "A\tB", "A\x00B", "A/SECRET", "A@EXAMPLE", "Á", "A" * 65,
+        ):
+            with self.subTest(provider=repr(bad)):
+                with self.assertRaisesRegex(MonitorDataError, "Feed provider"):
+                    declaration(self.bars, provider=bad)
+        for valid in ("A", "FICTIONAL_A", "massive-v2.1", "SOURCE_09"):
+            with self.subTest(valid=valid):
+                self.assertEqual(declaration(self.bars, provider=valid).provider, valid)
+
+    def test_manifest_rejects_unsafe_provider_before_feed_comparison(self):
+        with tempfile.TemporaryDirectory() as folder:
+            manifest = Path(folder) / "feed.json"
+            for provider in ("A\nFAKE_PROVIDER", "A/../../SECRET", "A" * 65):
+                with self.subTest(provider=repr(provider)):
+                    write_manifest(manifest, self.bars, provider)
+                    with self.assertRaisesRegex(MonitorDataError, "Feed provider"):
+                        feed_declaration_from_json(manifest)
+
     def test_manifest_rejects_malformed_unknown_and_noncanonical_dates(self):
         with tempfile.TemporaryDirectory() as folder:
             manifest = Path(folder) / "manifest.json"

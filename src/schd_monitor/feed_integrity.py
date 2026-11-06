@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import asdict, dataclass
 from datetime import date
 from pathlib import Path
@@ -17,6 +18,9 @@ from .models import Bar, MonitorDataError, validate_bars
 # Review against genuine provider conventions BEFORE adopting any production policy.
 MAX_RELATIVE_OHLC_DIFFERENCE = 0.0001
 FEED_DECLARATION_SCHEMA = 1
+# Identifier labels are untrusted metadata: forbid whitespace, control chars,
+# Unicode lookalikes, paths and unbounded strings in audit output.
+_PROVIDER_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
 
 
 @dataclass(frozen=True)
@@ -30,8 +34,8 @@ class FeedDeclaration:
     def __post_init__(self) -> None:
         if type(self.schema_version) is not int or self.schema_version != FEED_DECLARATION_SCHEMA:
             raise MonitorDataError("Unsupported feed declaration schema version")
-        if not isinstance(self.provider, str) or not self.provider.strip() or self.provider != self.provider.strip():
-            raise MonitorDataError("Feed provider must be a nonempty trimmed identifier")
+        if type(self.provider) is not str or not _PROVIDER_ID.fullmatch(self.provider):
+            raise MonitorDataError("Feed provider must be a bounded ASCII identifier")
         if not isinstance(self.symbol, str) or not self.symbol or self.symbol != self.symbol.strip().upper():
             raise MonitorDataError("Feed symbol must be a nonempty uppercase ticker")
         if self.adjustment != "SPLIT_ONLY":
