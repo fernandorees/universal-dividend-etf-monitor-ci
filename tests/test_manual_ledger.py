@@ -112,6 +112,31 @@ class TestManualLedger(unittest.TestCase):
         self.assertFalse(result.independently_attested)
         self.assertEqual(len(result.ledger_sha256), 64)
 
+    def test_manual_ledger_symbol_rejects_unsafe_identifier_text(self):
+        # Local ledger symbol must match the reviewed provider ticker grammar.
+        # The audit remains self-declared, never independently verified.
+        for invalid in (
+            None, True, 10, "", "schd", "SCHD ", " SCHD", "SCHD-",
+            "SCHD/OTHER", "SCHD\nFAKE", "SCHD\rFAKE", "SCHD\tFAKE",
+            "SCHD\x00FAKE", "SCHD\u2603", "A" * 16,
+        ):
+            with self.subTest(symbol=repr(invalid)):
+                with self.assertRaisesRegex(MonitorDataError, "Manual ledger symbol"):
+                    journal(symbol=invalid)
+        for valid in ("SCHD", "BRK.B", "A", "TEST123"):
+            with self.subTest(valid=valid):
+                self.assertEqual(journal(symbol=valid).symbol, valid)
+
+    def test_manual_ledger_json_rejects_unsafe_symbol_before_replay(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "fictional_ledger.json"
+            base = json_payload(journal())
+            for invalid in ("SCHD\nFAKE", "SCHD\x00FAKE", "X" * 16):
+                with self.subTest(symbol=repr(invalid)):
+                    path.write_text(json.dumps({**base, "symbol": invalid}), encoding="utf-8")
+                    with self.assertRaisesRegex(MonitorDataError, "Manual ledger symbol"):
+                        manual_ledger_from_json(path)
+
     def test_unconfirmed_order_or_proposed_fill_is_rejected(self):
         for confirmation in (False, None, 1, "True"):
             with self.subTest(confirmation=confirmation):
