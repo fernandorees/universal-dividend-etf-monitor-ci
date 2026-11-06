@@ -21,6 +21,9 @@ EVENT_KINDS = frozenset({
     "CASH_WITHDRAWAL", "DIVIDEND_CREDIT",
 })
 _DECIMAL = re.compile(r"-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?\Z")
+# Match reviewed offline provider ticker grammar; this is local input
+# validation, not proof of symbol identity or brokerage holdings.
+_TICKER = re.compile(r"[A-Z][A-Z0-9.]{0,14}\Z")
 
 
 def _decimal(text: object, label: str) -> Decimal:
@@ -49,8 +52,8 @@ def _date(value: object, label: str) -> date:
 
 
 def _symbol(value: object) -> str:
-    if not isinstance(value, str) or not value or value.strip().upper() != value:
-        raise MonitorDataError("Manual ledger symbol must be a trimmed uppercase ticker")
+    if type(value) is not str or not _TICKER.fullmatch(value):
+        raise MonitorDataError("Manual ledger symbol must be a bounded uppercase ticker")
     return value
 
 
