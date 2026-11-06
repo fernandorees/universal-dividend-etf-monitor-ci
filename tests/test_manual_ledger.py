@@ -137,6 +137,34 @@ class TestManualLedger(unittest.TestCase):
                     with self.assertRaisesRegex(MonitorDataError, "Manual ledger symbol"):
                         manual_ledger_from_json(path)
 
+    def test_manual_event_ids_refuse_control_paths_and_oversized_labels(self):
+        # Construct actual control characters: strings like "\\n" would test
+        # only a literal backslash, not a newline.
+        invalid = (
+            None, True, 2, "", " ID", "ID ", "ID WITH SPACE",
+            "ID" + chr(10) + "FORGED", "ID" + chr(13) + "FORGED",
+            "ID" + chr(9) + "FORGED", "ID" + chr(0) + "FORGED",
+            "ID/SECRET", "ID:EXTRA", "ID☃", "X" * 65,
+        )
+        for bad in invalid:
+            with self.subTest(event_id=repr(bad)):
+                with self.assertRaisesRegex(MonitorDataError, "Manual event_id"):
+                    replace(records()[0], event_id=bad)
+        for valid in ("E1", "FICTIONAL_BUY_1", "fill-2.3", "9", "Z" * 64):
+            with self.subTest(valid=valid):
+                self.assertEqual(replace(records()[0], event_id=valid).event_id, valid)
+
+    def test_manual_ledger_json_rejects_unsafe_event_id_before_audit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "fictional_ledger.json"
+            for bad in ("X" + chr(0) + "Y", "X" + chr(10) + "Y", "A" * 65):
+                with self.subTest(event_id=repr(bad)):
+                    payload = json_payload(journal())
+                    payload["events"][0]["event_id"] = bad
+                    path.write_text(json.dumps(payload), encoding="utf-8")
+                    with self.assertRaisesRegex(MonitorDataError, "Manual event_id"):
+                        manual_ledger_from_json(path)
+
     def test_unconfirmed_order_or_proposed_fill_is_rejected(self):
         for confirmation in (False, None, 1, "True"):
             with self.subTest(confirmation=confirmation):
