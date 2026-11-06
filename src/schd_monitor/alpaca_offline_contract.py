@@ -17,6 +17,8 @@ from zoneinfo import ZoneInfo
 from .models import Bar, MonitorDataError, validate_bars
 
 ALPACA_CONTRACT_SCHEMA = 1
+# Pinned single-page upper bound sent with every reviewed offline request.
+MAX_ALPACA_SINGLE_PAGE_BARS = 10000
 _SYMBOL = re.compile(r"[A-Z][A-Z0-9.]{0,14}\Z")
 _NEW_YORK = ZoneInfo("America/New_York")
 # The reviewed historical 1Day bar contract includes exactly these fields.
@@ -60,7 +62,7 @@ class AlpacaDailyRequest:
             "timeframe": "1Day", "start": self.start.isoformat(),
             "end": self.end.isoformat(), "asof": self.symbol_asof.isoformat(),
             "feed": self.feed, "adjustment": self.adjustment,
-            "sort": "asc", "limit": "10000",
+            "sort": "asc", "limit": str(MAX_ALPACA_SINGLE_PAGE_BARS),
         }
 
     def request_sha256(self) -> str:
@@ -114,6 +116,10 @@ def check_alpaca_offline_page(*, request: AlpacaDailyRequest, http_status: int,
     rows = payload["bars"]
     if type(rows) is not list or not rows:
         raise MonitorDataError("Alpaca response has no usable daily bars")
+    if len(rows) > MAX_ALPACA_SINGLE_PAGE_BARS:
+        raise MonitorDataError(
+            "Alpaca single-page response exceeds requested 10000-bar limit"
+        )
     result: list[Bar] = []
     for row in rows:
         if type(row) is not dict or set(row) != _DAILY_BAR_FIELDS:
