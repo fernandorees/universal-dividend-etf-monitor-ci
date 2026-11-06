@@ -5,7 +5,7 @@
     ".github/workflows/ci.yml": "7323a7f27bfb6696b04153b9d7cb392c6fd8b9ab933fa2c47290d8238780d3a8",
     ".gitignore": "71a8e100e69f3e3243536ca1d9084d5354f9a0fdc655d2d74c3977907eb918a7",
     "README.md": "aa89a5525db37465b2d53e375f0a31d1886ad11b5a2cfce359fd9774b02d16e8",
-    "ci/verify_snapshot.py": "f77501751597908899e3ac1eb5cec83753ceebfdf66fc06833a9a4ba089f47b2",
+    "ci/verify_snapshot.py": "eb0070e6011d7d1ef64330b265368fc9f735d4d5ff4d5c0524b883cc9f42ecfe",
     "pyproject.toml": "484b0bbb0e5ec4f4975628ffd92f428f048c55c2c28ec8717e53fb12210360f5",
     "src/schd_monitor/__init__.py": "83a61cf72d7eff0d597a69b05c05924f888d2f9077d875ce5bda781ef1414fe9",
     "src/schd_monitor/__main__.py": "8134dc71036ab6fef7cb605ec59b400b2864890fc00526f9763c447e2937e295",

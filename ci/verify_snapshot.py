@@ -46,8 +46,19 @@ def verify() -> None:
         location = ROOT / rel
         if location.is_symlink() or not location.is_file():
             raise ValueError("Missing or symlinked public file: " + name)
-        observed = hashlib.sha256(location.read_bytes()).hexdigest()
-        if observed != expected:
+        # A checked-out text file can contain LF (Linux) or CRLF (Windows),
+        # while git may normalize it during commit. Only these newline forms
+        # are interchangeable; all other content remains SHA-256 bound.
+        raw = location.read_bytes()
+        raw.decode("utf-8", errors="strict")
+        canonical_lf = raw.replace(b"\r\n", b"\n")
+        if b"\r" in canonical_lf:
+            raise ValueError("Unreviewed carriage return in public file: " + name)
+        allowed_digests = {
+            hashlib.sha256(canonical_lf).hexdigest(),
+            hashlib.sha256(canonical_lf.replace(b"\n", b"\r\n")).hexdigest(),
+        }
+        if expected not in allowed_digests:
             raise ValueError("Public SHA-256 mismatch: " + name)
     expected_paths = set(checksums) | {MANIFEST_PATH}
     actual = subprocess.run(
