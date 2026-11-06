@@ -161,6 +161,14 @@ class OfflineProviderPairTests(unittest.TestCase):
         with self.assertRaisesRegex(MonitorDataError, "pagination"):
             audit_offline_alpaca_massive_pair(**data)
 
+    def test_composed_gate_refuses_oversized_alpaca_single_page(self):
+        data = self.sample()
+        original = data["alpaca_payload"]["bars"]
+        data["alpaca_payload"]["bars"] = [original[0]] * 10001
+        with self.assertRaisesRegex(MonitorDataError, "exceeds requested 10000-bar limit"):
+            audit_offline_alpaca_massive_pair(**data)
+        self.assertEqual(len(original), len(self.basis["alpaca_payload"]["bars"]))
+
     def test_composed_gate_rejects_unreviewed_alpaca_daily_bar_field(self):
         data = self.sample()
         data["alpaca_payload"]["bars"][3]["unreviewed_claim"] = "FICTIONAL"

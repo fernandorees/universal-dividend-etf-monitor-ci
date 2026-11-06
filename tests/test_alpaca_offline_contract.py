@@ -4,9 +4,13 @@ from __future__ import annotations
 import copy
 import unittest
 from dataclasses import replace
-from datetime import date
+from datetime import date, datetime, time, timedelta, timezone
+from zoneinfo import ZoneInfo
 
-from schd_monitor.alpaca_offline_contract import AlpacaDailyRequest, check_alpaca_offline_page
+from schd_monitor.alpaca_offline_contract import (
+    AlpacaDailyRequest, MAX_ALPACA_SINGLE_PAGE_BARS,
+    check_alpaca_offline_page,
+)
 from schd_monitor.models import MonitorDataError
 
 
@@ -164,6 +168,50 @@ class AlpacaOfflineContractTests(unittest.TestCase):
                     self.assertEqual(data["bars"][index][unexpected],
                                      "fictional-untrusted-value")
                     self.assertEqual(original, response())
+
+    def test_at_declared_page_limit_remains_unattested(self):
+        # Synthetic weekday-only bars do NOT prove actual XNYS holiday coverage.
+        days = []
+        day = date(2038, 6, 10)
+        while len(days) < MAX_ALPACA_SINGLE_PAGE_BARS:
+            if day.weekday() < 5:
+                days.append(day)
+            day += timedelta(days=1)
+        ny = ZoneInfo("America/New_York")
+        bars = []
+        for session in days:
+            stamp = datetime.combine(session, time(0), tzinfo=ny)
+            utc_stamp = stamp.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+            bars.append({
+                "t": utc_stamp, "o": 10.0, "h": 11.0,
+                "l": 9.0, "c": 10.5, "v": 200, "n": 50, "vw": 10.2,
+            })
+        bounded_request = replace(
+            request(), start=days[0], end=days[-1], symbol_asof=days[-1]
+        )
+        checked = check_alpaca_offline_page(
+            request=bounded_request, http_status=200,
+            payload={"symbol": "MOCK", "bars": bars, "next_page_token": None},
+        )
+        self.assertEqual(len(checked.bars), MAX_ALPACA_SINGLE_PAGE_BARS)
+        self.assertEqual(checked.as_json()["bars_count"], MAX_ALPACA_SINGLE_PAGE_BARS)
+        self.assertFalse(checked.production_signals_verified)
+        self.assertFalse(checked.session_coverage_verified)
+        self.assertEqual(checked.trading_status, "UNVERIFIED_DO_NOT_TRADE")
+
+    def test_over_limit_page_refused_before_parsing_any_bar(self):
+        data = response()
+        # Duplicated rows and an invalid first row demonstrate an early
+        # bounded-list check without parsing, sorting or hashing the payload.
+        data["bars"] = [copy.deepcopy(response()["bars"][0])] * (
+            MAX_ALPACA_SINGLE_PAGE_BARS + 1
+        )
+        data["bars"][0]["o"] = None
+        with self.assertRaisesRegex(MonitorDataError, "exceeds requested 10000-bar limit"):
+            check_alpaca_offline_page(
+                request=request(), http_status=200, payload=data
+            )
+        self.assertEqual(len(data["bars"]), MAX_ALPACA_SINGLE_PAGE_BARS + 1)
 
     def test_utc_timestamp_must_represent_new_york_midnight(self):
         for bad in ("2038-06-10T00:00:00Z", "2038-06-10T04:01:00Z",
