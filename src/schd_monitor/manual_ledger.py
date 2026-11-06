@@ -21,6 +21,9 @@ EVENT_KINDS = frozenset({
     "CASH_WITHDRAWAL", "DIVIDEND_CREDIT",
 })
 _DECIMAL = re.compile(r"-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?\Z")
+# Self-declared event IDs appear in local error output and audit metadata;
+# use bounded, printable ASCII identifiers, never paths/control characters.
+_EVENT_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
 # Match reviewed offline provider ticker grammar; this is local input
 # validation, not proof of symbol identity or brokerage holdings.
 _TICKER = re.compile(r"[A-Z][A-Z0-9.]{0,14}\Z")
@@ -70,10 +73,8 @@ class ManualEvent:
     def __post_init__(self) -> None:
         if type(self.sequence) is not int or self.sequence < 1:
             raise MonitorDataError("Manual event sequence must be a positive integer")
-        if (not isinstance(self.event_id, str) or not self.event_id
-                or self.event_id.strip() != self.event_id
-                or any(c.isspace() for c in self.event_id)):
-            raise MonitorDataError("Manual event_id must be nonempty with no whitespace")
+        if type(self.event_id) is not str or not _EVENT_ID.fullmatch(self.event_id):
+            raise MonitorDataError("Manual event_id must be a bounded ASCII identifier")
         if type(self.session) is not date:
             raise MonitorDataError("Manual event session must be a date")
         if type(self.manually_confirmed) is not bool or self.manually_confirmed is not True:
