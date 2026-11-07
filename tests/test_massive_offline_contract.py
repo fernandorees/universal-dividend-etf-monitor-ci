@@ -2,15 +2,23 @@
 from __future__ import annotations
 
 import copy
+import io
+import json
+import os
 import unittest
 from dataclasses import replace
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
+from unittest.mock import Mock, patch
+from urllib.error import HTTPError
 
 from schd_monitor.massive_offline_contract import (
     MAX_BASE_AGGREGATES, MassiveDailyRequest, check_massive_offline_response,
 )
 from schd_monitor.models import MonitorDataError
+from schd_monitor.data import (
+    MAX_MASSIVE_REST_BYTES, _NoMassiveRedirect, fetch_massive_readonly_daily,
+)
 
 
 def req():
@@ -210,6 +218,88 @@ class MassiveOfflineContractTests(unittest.TestCase):
         self.assertNotEqual(first.response_sha256, second.response_sha256)
         self.assertEqual(first.request_sha256, second.request_sha256)
         self.assertEqual(raw, before)
+
+
+class _FakeMassiveReply(io.BytesIO):
+    def __init__(self, payload: bytes, status: int = 200):
+        super().__init__(payload)
+        self._status = status
+        self.max_requested_bytes = 0
+
+    def getcode(self):
+        return self._status
+
+    def read(self, size=-1):
+        self.max_requested_bytes = max(self.max_requested_bytes, size)
+        return super().read(size)
+
+
+class MassiveReadOnlyTransportTests(unittest.TestCase):
+    """All transport tests use mocked HTTPS; never call a vendor or log keys."""
+
+    def test_no_local_data_key_rejects_without_network(self):
+        with patch.dict(os.environ, {}, clear=True), patch(
+            "schd_monitor.data.build_opener"
+        ) as make_opener:
+            with self.assertRaisesRegex(MonitorDataError, "MASSIVE_API_KEY"):
+                fetch_massive_readonly_daily(req())
+            make_opener.assert_not_called()
+        with self.assertRaisesRegex(MonitorDataError, "Explicit MassiveDailyRequest"):
+            fetch_massive_readonly_daily("MOCK")
+
+    def test_explicit_https_bearer_get_is_bounded_and_unattested(self):
+        response = _FakeMassiveReply(json.dumps(good()).encode("utf-8"))
+        opener = Mock()
+        opener.open.return_value = response
+        with patch.dict(os.environ, {"MASSIVE_API_KEY": "fictional-local-data-key"}), patch(
+            "schd_monitor.data.build_opener", return_value=opener
+        ) as build:
+            result = fetch_massive_readonly_daily(req())
+        self.assertEqual(len(result.bars), 2)
+        self.assertEqual(result.trading_status, "UNVERIFIED_DO_NOT_TRADE")
+        self.assertFalse(result.provider_authenticated)
+        self.assertFalse(result.production_signals_verified)
+        self.assertEqual(response.max_requested_bytes, MAX_MASSIVE_REST_BYTES + 1)
+        request = opener.open.call_args.args[0]
+        self.assertEqual(request.get_method(), "GET")
+        self.assertEqual(request.full_url, (
+            "https://api.massive.com/v2/aggs/ticker/MOCK/range/1/day/2038-06-10/2038-06-14"
+            "?adjusted=true&sort=asc&limit=50000"
+        ))
+        self.assertEqual(request.get_header("Authorization"),
+                         "Bearer fictional-local-data-key")
+        self.assertNotIn("fictional-local-data-key", request.full_url)
+        self.assertIsInstance(build.call_args.args[0], _NoMassiveRedirect)
+        self.assertIsNone(build.call_args.args[0].redirect_request(
+            None, None, 302, "", {}, "https://other.example.invalid"
+        ))
+
+    def test_no_token_or_payload_leaks_on_denied_redirect_and_invalid_data(self):
+        for response in (
+            _FakeMassiveReply(json.dumps(good()).encode(), status=403),
+            _FakeMassiveReply(b"\\xff"),
+            _FakeMassiveReply(b'{"status": "OK", "status": "UNEXPECTED"}'),
+            _FakeMassiveReply(b"{"),
+            _FakeMassiveReply(b" " * (MAX_MASSIVE_REST_BYTES + 1)),
+        ):
+            with self.subTest(payload_size=len(response.getvalue())):
+                opener = Mock()
+                opener.open.return_value = response
+                with patch.dict(os.environ, {"MASSIVE_API_KEY": "fictional-local-data-key"}), patch(
+                    "schd_monitor.data.build_opener", return_value=opener
+                ):
+                    with self.assertRaises(MonitorDataError) as error:
+                        fetch_massive_readonly_daily(req())
+                self.assertNotIn("fictional-local-data-key", str(error.exception))
+        opener = Mock()
+        opener.open.side_effect = HTTPError("https://api.massive.com", 302,
+                                            "redirect", {}, None)
+        with patch.dict(os.environ, {"MASSIVE_API_KEY": "fictional-local-data-key"}), patch(
+            "schd_monitor.data.build_opener", return_value=opener
+        ):
+            with self.assertRaisesRegex(MonitorDataError, "HTTPS request failed") as error:
+                fetch_massive_readonly_daily(req())
+        self.assertNotIn("fictional-local-data-key", str(error.exception))
 
 
 if __name__ == "__main__":
