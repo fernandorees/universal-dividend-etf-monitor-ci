@@ -11,10 +11,12 @@ from dataclasses import replace
 from datetime import date, timedelta
 from decimal import Decimal
 from pathlib import Path
+from unittest.mock import patch
 
 from schd_monitor.cli import main
 from schd_monitor.manual_ledger import (
-    ManualEvent, ManualLedger, audit_manual_ledger, manual_ledger_from_json,
+    MAX_MANUAL_LEDGER_BYTES, ManualEvent, ManualLedger,
+    audit_manual_ledger, manual_ledger_from_json,
 )
 from schd_monitor.models import MonitorDataError, Position
 
@@ -308,6 +310,62 @@ class TestManualLedger(unittest.TestCase):
             path.write_text("{bad", encoding="utf-8")
             with self.assertRaisesRegex(MonitorDataError, "Invalid manual-ledger JSON"):
                 manual_ledger_from_json(path)
+
+    def test_local_json_read_has_exact_one_megabyte_boundary(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "fictional_ledger.json"
+            valid = json.dumps(json_payload(journal())).encode("utf-8")
+            self.assertLess(len(valid), MAX_MANUAL_LEDGER_BYTES)
+            # Trailing JSON whitespace is legal. At the exact boundary, a
+            # complete fictional ledger still parses; one extra byte refuses.
+            path.write_bytes(valid + b" " * (MAX_MANUAL_LEDGER_BYTES - len(valid)))
+            self.assertEqual(manual_ledger_from_json(path), journal())
+            path.write_bytes(valid + b" " * (MAX_MANUAL_LEDGER_BYTES + 1 - len(valid)))
+            with self.assertRaisesRegex(MonitorDataError, "size limit"):
+                manual_ledger_from_json(path)
+
+    def test_local_json_unreadable_and_non_utf8_fail_closed_without_signal(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            missing, ledger, bars, current, output = (root / name for name in
+                ("missing.json", "fictional_ledger.json", "bars.csv", "position.json",
+                 "signal.json"))
+            for invalid_path in (missing, root):
+                with self.subTest(path=invalid_path.name):
+                    with self.assertRaisesRegex(MonitorDataError, "unavailable or unreadable"):
+                        manual_ledger_from_json(invalid_path)
+            # Actual invalid UTF-8 byte, not an escaped textual sequence.
+            ledger.write_bytes(b'{"symbol":"' + bytes([255]) + b'"}')
+            with self.assertRaisesRegex(MonitorDataError, "valid UTF-8"):
+                manual_ledger_from_json(ledger)
+
+            # File size alone is insufficient: reject deeply nested JSON and
+            # excessive integer literals as normal data-validation failures.
+            ledger.write_text("[" * 10000 + "0" + "]" * 10000, encoding="utf-8")
+            with self.assertRaisesRegex(MonitorDataError, "JSON structure or value"):
+                manual_ledger_from_json(ledger)
+            # Reproduce a parser numeric-limit ValueError deterministically,
+            # without depending on local Python integer-conversion settings.
+            ledger.write_text("{}", encoding="utf-8")
+            with patch("schd_monitor.manual_ledger.json.loads",
+                       side_effect=ValueError("synthetic numeric limit")):
+                with self.assertRaisesRegex(MonitorDataError, "JSON structure or value"):
+                    manual_ledger_from_json(ledger)
+            ledger.write_bytes(b'{"symbol":"' + bytes([255]) + b'"}')
+
+            price_csv(bars)
+            current.write_text(json.dumps({
+                "symbol": "SCHD", "shares": 6, "available_cash": 143.5,
+                "peak_close": 130, "reconciled_through": DAYS[-1].isoformat(),
+            }), encoding="utf-8")
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                status = main(["--csv", str(bars), "--position", str(current),
+                               "--manual-ledger", str(ledger), "--output", str(output)])
+            self.assertEqual(status, 2)
+            self.assertIn("NO_VERIFIED_SIGNAL", stderr.getvalue())
+            self.assertIn("valid UTF-8", stderr.getvalue())
+            self.assertFalse(output.exists())
 
     def test_unrepresentably_large_precise_cash_increment_fails_closed(self):
         ev = (event(1, "CASH_CONTRIBUTION", "0", "1", 70),)
