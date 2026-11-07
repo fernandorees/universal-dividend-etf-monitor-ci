@@ -19,6 +19,8 @@ from .models import Bar, MonitorDataError, validate_bars
 ALPACA_CONTRACT_SCHEMA = 1
 # Pinned single-page upper bound sent with every reviewed offline request.
 MAX_ALPACA_SINGLE_PAGE_BARS = 10000
+# Independent in-memory UTF-8/JSON intake cap before existing shape validation.
+MAX_ALPACA_REST_BYTES = 4 * 1024 * 1024
 _SYMBOL = re.compile(r"[A-Z][A-Z0-9.]{0,14}\Z")
 _NEW_YORK = ZoneInfo("America/New_York")
 # The reviewed historical 1Day bar contract includes exactly these fields.
@@ -186,3 +188,48 @@ def check_alpaca_offline_page(*, request: AlpacaDailyRequest, http_status: int,
     except (TypeError, ValueError, OverflowError) as exc:
         raise MonitorDataError("Unhashable or invalid Alpaca response JSON") from exc
     return AlpacaOfflinePage(tuple(result), request.request_sha256(), response_hash)
+
+
+def check_alpaca_bounded_response_bytes(
+    *, request: AlpacaDailyRequest, http_status: int, raw_body: bytes,
+) -> AlpacaOfflinePage:
+    """Review caller-supplied untrusted HTTP body bytes WITHOUT making any HTTP call.
+
+    This pure, credential-free boundary intentionally has no URL, headers,
+    socket, environment-variable, file or brokerage handling. A future
+    independently approved read-only data transport may call it, but this
+    function never attests the provider or upgrades production status.
+    """
+    if type(request) is not AlpacaDailyRequest:
+        raise MonitorDataError("Typed Alpaca request required for byte intake")
+    if type(http_status) is not int or http_status != 200:
+        raise MonitorDataError("Alpaca HTTP status not successful; no fallback feed")
+    if type(raw_body) is not bytes or not raw_body:
+        raise MonitorDataError("Alpaca response body must be nonempty bytes")
+    if len(raw_body) > MAX_ALPACA_REST_BYTES:
+        raise MonitorDataError("Alpaca response body exceeds 4 MiB size limit")
+
+    def unique_object(pairs):
+        obj = {}
+        for key, value in pairs:
+            if key in obj:
+                raise MonitorDataError("Duplicate Alpaca response JSON key")
+            obj[key] = value
+        return obj
+
+    def reject_non_json_constant(token):
+        raise MonitorDataError("Alpaca response contains non-JSON numeric constant")
+
+    try:
+        payload = json.loads(
+            raw_body.decode("utf-8"), object_pairs_hook=unique_object,
+            parse_constant=reject_non_json_constant,
+        )
+    except MonitorDataError:
+        raise
+    except (UnicodeDecodeError, ValueError, RecursionError, OverflowError):
+        raise MonitorDataError("Invalid Alpaca response UTF-8/JSON") from None
+
+    return check_alpaca_offline_page(
+        request=request, http_status=http_status, payload=payload,
+    )
