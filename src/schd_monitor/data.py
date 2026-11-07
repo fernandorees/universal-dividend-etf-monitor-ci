@@ -6,7 +6,7 @@ import os
 from datetime import date
 from pathlib import Path
 from urllib.parse import urlencode
-from urllib.request import Request, urlopen, HTTPRedirectHandler, build_opener
+from urllib.request import Request, HTTPRedirectHandler, build_opener
 from urllib.error import HTTPError, URLError
 from .models import Bar, MonitorDataError, Position, validate_bars, validate_expected_sessions
 from .massive_offline_contract import (
@@ -59,39 +59,18 @@ def position_from_json(path: str | Path) -> Position:
 
 def fetch_alpaca_raw_daily(symbol: str, start: str, end: str,
                            *, feed: str = 'sip', max_pages: int = 50) -> list[Bar]:
-    """Authenticated GET, read-only. Raw (unadjusted) bars: NOT suitable for production
-    indicator calculation across splits until corporate-action normalization is validated.
-    ``end`` is exclusive in the provider's daily-bars API. Avoid partial current session.
+    """Permanently disabled legacy experimental Alpaca Trading-API-key path.
+
+    Alpaca's documented market-data API can share Trading API credentials,
+    which our broker-disconnected monitor must NEVER handle. Retain this
+    callable signature only to fail closed for historical callers. No
+    environment-variable read, URL, HTTP, file, position, or order is made.
+    For untrusted fictional Alpaca bars use alpaca_offline_contract instead.
     """
-    key, secret = os.getenv('ALPACA_API_KEY_ID'), os.getenv('ALPACA_API_SECRET_KEY')
-    if not key or not secret:
-        raise MonitorDataError('ALPACA_API_KEY_ID/ALPACA_API_SECRET_KEY missing (do not commit credentials)')
-    if feed != 'sip':
-        raise MonitorDataError('Use SIP consolidated feed; IEX subset not accepted')
-    if symbol.upper() not in {'SCHD','VYM','VIG','DGRO','HDV','SPYD','DGRW','SPY'}:
-        raise MonitorDataError('Unsupported ticker')
-    bars = []
-    token = None
-    for _ in range(max_pages):
-        params = {'timeframe':'1Day','start':start,'end':end,'adjustment':'raw',
-                  'feed':feed,'limit':'10000','sort':'asc'}
-        if token: params['page_token'] = token
-        url = ('https://data.alpaca.markets/v2/stocks/' + symbol.upper() + '/bars?' + urlencode(params))
-        req = Request(url, headers={'APCA-API-KEY-ID':key,'APCA-API-SECRET-KEY':secret,
-                                     'User-Agent':'universal-etf-monitor/0.1'})
-        try:
-            with urlopen(req, timeout=30) as reply:
-                payload = json.load(reply)
-        except (HTTPError, URLError, TimeoutError, json.JSONDecodeError) as exc:
-            raise MonitorDataError(f'Alpaca data request failed: {type(exc).__name__}') from exc
-        for row in payload.get('bars',[]):
-            bars.append(Bar(date.fromisoformat(row['t'][:10]),
-                            float(row['o']),float(row['h']),float(row['l']),float(row['c'])))
-        token = payload.get('next_page_token')
-        if not token:break
-    else:raise MonitorDataError('Exceeded Alpaca pagination limit')
-    validate_bars(bars)
-    return bars
+    raise MonitorDataError(
+        "Legacy Alpaca transport disabled: trading-capable credentials forbidden"
+    )
+
 
 # A separate, opt-in, READ-ONLY data-vendor transport. The existing Alpaca
 # experimental raw-price adapter above is NOT part of this path.
