@@ -16,6 +16,8 @@ from pathlib import Path
 from .models import MonitorDataError, Position
 
 MANUAL_LEDGER_SCHEMA = 1
+# Development-only local input budget; refuse unbounded reads BEFORE JSON parse.
+MAX_MANUAL_LEDGER_BYTES = 1024 * 1024
 EVENT_KINDS = frozenset({
     "BUY_FILL", "SELL_FILL", "CASH_CONTRIBUTION",
     "CASH_WITHDRAWAL", "DIVIDEND_CREDIT",
@@ -145,10 +147,26 @@ def _unique_object(pairs: list[tuple[str, object]]) -> dict:
 
 def manual_ledger_from_json(path: str | Path) -> ManualLedger:
     """Read a local file without writing or authenticating any manual assertion."""
+    # Bounded read prevents arbitrarily large local input files exhausting
+    # memory before JSON validation. No file is created or modified.
     try:
-        payload = json.loads(Path(path).read_text(encoding="utf-8"), object_pairs_hook=_unique_object)
+        with Path(path).open("rb") as source:
+            raw = source.read(MAX_MANUAL_LEDGER_BYTES + 1)
+    except (OSError, TypeError, ValueError) as exc:
+        raise MonitorDataError("Manual-ledger file unavailable or unreadable") from exc
+    if len(raw) > MAX_MANUAL_LEDGER_BYTES:
+        raise MonitorDataError("Manual-ledger JSON exceeds local size limit")
+    try:
+        payload = json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_object)
+    except UnicodeDecodeError as exc:
+        raise MonitorDataError("Manual-ledger JSON must be valid UTF-8") from exc
     except json.JSONDecodeError as exc:
         raise MonitorDataError("Invalid manual-ledger JSON") from exc
+    except MonitorDataError:
+        # Preserve the exact duplicate-key refusal from object_pairs_hook.
+        raise
+    except (ValueError, RecursionError) as exc:
+        raise MonitorDataError("Invalid manual-ledger JSON structure or value") from exc
     required = {
         "schema_version", "symbol", "checkpoint_session", "checkpoint_shares",
         "checkpoint_cash", "reviewed_through", "activity_reviewed", "events",
