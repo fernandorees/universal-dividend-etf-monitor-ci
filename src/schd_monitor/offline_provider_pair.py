@@ -6,11 +6,13 @@ This checks fictional/external *untrusted* payload consistency ONLY.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from datetime import datetime
+from datetime import date, datetime
 
 from .alpaca_offline_contract import AlpacaDailyRequest, check_alpaca_offline_page
 from .feed_integrity import FeedDeclaration
-from .exchange_calendar import xnys_sessions_within_inclusive_dates
+from .exchange_calendar import (
+    completed_xnys_sessions, xnys_sessions_within_inclusive_dates,
+)
 from .massive_offline_contract import MassiveDailyRequest, check_massive_offline_response
 from .models import MonitorDataError
 from .session_feed_gate import audit_offline_completed_dual_feeds
@@ -46,6 +48,39 @@ class OfflineAlpacaMassiveAudit:
         return asdict(self)
 
 
+def preflight_offline_alpaca_massive_requests(
+    *, alpaca_request: AlpacaDailyRequest, massive_request: MassiveDailyRequest,
+    as_of: datetime,
+) -> tuple[date, ...]:
+    """Check both inert request definitions and the closed-session schedule.
+
+    Caller may invoke this BEFORE any future opt-in market-data GET.  A
+    calendar pass is not vendor publication, feed independence, entitlement,
+    split correctness, real-market-data validity, or signal qualification.
+    No HTTP, credential, portfolio state, order, or side effect is involved.
+    """
+    if type(alpaca_request) is not AlpacaDailyRequest or type(massive_request) is not MassiveDailyRequest:
+        raise MonitorDataError("Typed Alpaca and Massive requests are required")
+    if (alpaca_request.symbol != massive_request.symbol
+            or alpaca_request.start != massive_request.start
+            or alpaca_request.end != massive_request.end):
+        raise MonitorDataError("Alpaca and Massive requested symbol/date bounds differ")
+    if (not isinstance(as_of, datetime)
+            or as_of.tzinfo is None or as_of.utcoffset() is None):
+        raise MonitorDataError("Offline request preflight requires timezone-aware as_of")
+
+    requested = xnys_sessions_within_inclusive_dates(
+        alpaca_request.start, alpaca_request.end
+    )
+    completed = completed_xnys_sessions(requested[0], as_of)
+    if requested != completed:
+        raise MonitorDataError(
+            "Session coverage mismatch: requested XNYS range is not exactly "
+            "the closed sessions at as_of"
+        )
+    return tuple(requested)
+
+
 def audit_offline_alpaca_massive_pair(
     *, alpaca_request: AlpacaDailyRequest, alpaca_http_status: int,
     alpaca_payload: object, massive_request: MassiveDailyRequest,
@@ -61,13 +96,13 @@ def audit_offline_alpaca_massive_pair(
     The caller supplies every status, payload and as_of value: none are
     vendor-attested or trustworthy proof of data publication or independence.
     """
-    if type(alpaca_request) is not AlpacaDailyRequest or type(massive_request) is not MassiveDailyRequest:
-        raise MonitorDataError("Typed Alpaca and Massive requests are required")
-    if (alpaca_request.symbol != massive_request.symbol
-            or alpaca_request.start != massive_request.start
-            or alpaca_request.end != massive_request.end):
-        raise MonitorDataError("Alpaca and Massive requested symbol/date bounds differ")
-
+    # Request/calendar-only failure must be detectable BEFORE any future
+    # vendor acquisition; an already supplied fictional payload still undergoes
+    # its independent strict offline shape checks immediately afterward.
+    requested_sessions = list(preflight_offline_alpaca_massive_requests(
+        alpaca_request=alpaca_request, massive_request=massive_request,
+        as_of=as_of,
+    ))
     alpaca = check_alpaca_offline_page(
         request=alpaca_request, http_status=alpaca_http_status, payload=alpaca_payload
     )
@@ -77,9 +112,6 @@ def audit_offline_alpaca_massive_pair(
     # Reject shared omissions on *any* requested scheduled XNYS session.
     # This includes a leading/trailing session when the raw request date is
     # a holiday/weekend. Do not just compare the two vendor payloads.
-    requested_sessions = xnys_sessions_within_inclusive_dates(
-        alpaca_request.start, alpaca_request.end
-    )
     for name, page in (("Alpaca", alpaca), ("Massive", massive)):
         if [bar.session for bar in page.bars] != requested_sessions:
             raise MonitorDataError(
