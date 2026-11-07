@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import unittest
 from dataclasses import replace
 from datetime import date, datetime, time, timedelta, timezone
@@ -9,6 +10,7 @@ from zoneinfo import ZoneInfo
 
 from schd_monitor.alpaca_offline_contract import (
     AlpacaDailyRequest, MAX_ALPACA_SINGLE_PAGE_BARS,
+    MAX_ALPACA_REST_BYTES, check_alpaca_bounded_response_bytes,
     check_alpaca_offline_page,
 )
 from schd_monitor.models import MonitorDataError
@@ -248,6 +250,99 @@ class AlpacaOfflineContractTests(unittest.TestCase):
         self.assertEqual(data, before)
         self.assertNotEqual(page.response_sha256, page2.response_sha256)
         self.assertEqual(page.request_sha256, page2.request_sha256)
+
+
+class AlpacaResponseByteIngressTests(unittest.TestCase):
+    """Synthetic in-memory body inspection: no network, keys or account data."""
+
+    def body(self):
+        return json.dumps(response(), separators=(",", ":")).encode("utf-8")
+
+    def test_valid_response_bytes_delegate_and_remain_unverified(self):
+        raw = self.body()
+        before = bytes(raw)
+        reviewed = check_alpaca_bounded_response_bytes(
+            request=request(), http_status=200, raw_body=raw,
+        )
+        offline = check_alpaca_offline_page(
+            request=request(), http_status=200, payload=response(),
+        )
+        self.assertEqual(reviewed.response_sha256, offline.response_sha256)
+        self.assertEqual(reviewed.request_sha256, offline.request_sha256)
+        self.assertEqual(len(reviewed.bars), 2)
+        self.assertEqual(reviewed.trading_status, "UNVERIFIED_DO_NOT_TRADE")
+        for field in ("provider_authenticated", "feed_entitlement_verified",
+                      "split_adjustment_verified", "session_coverage_verified",
+                      "vendor_bar_finality_verified", "production_signals_verified"):
+            self.assertFalse(getattr(reviewed, field), field)
+        self.assertEqual(raw, before)
+        self.assertNotIn("bars", reviewed.as_json())
+
+    def test_non_200_and_wrong_input_types_fail_before_parse(self):
+        for code in (401, 403, 404, 429, 500, 503, True, "200"):
+            with self.subTest(code=code):
+                with self.assertRaisesRegex(MonitorDataError, "HTTP status"):
+                    check_alpaca_bounded_response_bytes(
+                        request=request(), http_status=code, raw_body=b"{",
+                    )
+        with self.assertRaisesRegex(MonitorDataError, "Typed Alpaca request"):
+            check_alpaca_bounded_response_bytes(
+                request=None, http_status=200, raw_body=self.body(),
+            )
+        for raw in (None, "", bytearray(self.body()), b""):
+            with self.subTest(raw_type=type(raw).__name__):
+                with self.assertRaisesRegex(MonitorDataError, "nonempty bytes"):
+                    check_alpaca_bounded_response_bytes(
+                        request=request(), http_status=200, raw_body=raw,
+                    )
+
+    def test_bounded_exact_4mib_accepts_valid_json_but_one_more_fails(self):
+        valid = self.body()
+        self.assertLess(len(valid), MAX_ALPACA_REST_BYTES)
+        at_limit = valid + b" " * (MAX_ALPACA_REST_BYTES - len(valid))
+        checked = check_alpaca_bounded_response_bytes(
+            request=request(), http_status=200, raw_body=at_limit,
+        )
+        self.assertEqual(checked.trading_status, "UNVERIFIED_DO_NOT_TRADE")
+        with self.assertRaisesRegex(MonitorDataError, "4 MiB size limit"):
+            check_alpaca_bounded_response_bytes(
+                request=request(), http_status=200, raw_body=at_limit + b" ",
+            )
+
+    def test_invalid_utf8_json_duplicates_and_non_json_constants_fail(self):
+        original = self.body()
+        duplicate_top = original.replace(b'"symbol":"MOCK"',
+                                         b'"symbol":"MOCK","symbol":"MOCK"', 1)
+        duplicate_nested = original.replace(
+            b'"o":10.0', b'"o":10.0,"o":10.0', 1,
+        )
+        self.assertNotEqual(original, duplicate_top)
+        self.assertNotEqual(original, duplicate_nested)
+        for bad in (bytes([0xff]), b"{", b"null", b'{"x": NaN}',
+                    original.replace(b'"c":10.5', b'"c":Infinity', 1),
+                    duplicate_top, duplicate_nested):
+            with self.subTest(first_bytes=bad[:32]):
+                with self.assertRaises(MonitorDataError):
+                    check_alpaca_bounded_response_bytes(
+                        request=request(), http_status=200, raw_body=bad,
+                    )
+
+    def test_unknown_envelope_and_bad_session_never_become_valid_signal(self):
+        bad = response()
+        bad["credentials"] = "fictional-not-a-real-key"
+        raw = json.dumps(bad).encode("utf-8")
+        with self.assertRaises(MonitorDataError) as err:
+            check_alpaca_bounded_response_bytes(
+                request=request(), http_status=200, raw_body=raw,
+            )
+        self.assertNotIn("fictional-not-a-real-key", str(err.exception))
+        bad = response()
+        bad["bars"][0]["t"] = "2038-06-10T05:00:00Z"
+        with self.assertRaisesRegex(MonitorDataError, "session midnight"):
+            check_alpaca_bounded_response_bytes(
+                request=request(), http_status=200,
+                raw_body=json.dumps(bad).encode("utf-8"),
+            )
 
 
 if __name__ == "__main__":
