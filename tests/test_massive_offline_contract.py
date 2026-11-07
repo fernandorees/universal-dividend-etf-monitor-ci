@@ -18,6 +18,7 @@ from schd_monitor.massive_offline_contract import (
 from schd_monitor.models import MonitorDataError
 from schd_monitor.data import (
     MAX_MASSIVE_REST_BYTES, _NoMassiveRedirect, fetch_massive_readonly_daily,
+    fetch_alpaca_raw_daily,
 )
 
 
@@ -300,6 +301,59 @@ class MassiveReadOnlyTransportTests(unittest.TestCase):
             with self.assertRaisesRegex(MonitorDataError, "HTTPS request failed") as error:
                 fetch_massive_readonly_daily(req())
         self.assertNotIn("fictional-local-data-key", str(error.exception))
+
+
+class LegacyAlpacaBrokerCredentialsFailClosedTests(unittest.TestCase):
+    """Prove the dormant Trading API-key adapter cannot read keys or call HTTP."""
+
+    def test_legacy_alpaca_refuses_even_when_trading_credentials_exist(self):
+        with patch.dict(os.environ, {
+            "ALPACA_API_KEY_ID": "fictional-never-use-key",
+            "ALPACA_API_SECRET_KEY": "fictional-never-use-secret",
+        }), patch("schd_monitor.data.os.getenv", side_effect=AssertionError(
+            "legacy adapter must never inspect credentials",
+        )) as getenv, patch("schd_monitor.data.build_opener", side_effect=AssertionError(
+            "legacy adapter must never build an HTTP opener",
+        )) as opener, patch("urllib.request.urlopen", side_effect=AssertionError(
+            "legacy adapter must never open a URL",
+        )) as urlopen:
+            for kwargs in (
+                {"symbol": "SCHD", "start": "2038-06-10", "end": "2038-06-14"},
+                {"symbol": "SCHD", "start": "2038-06-10",
+                 "end": "2038-06-14", "feed": "iex"},
+            ):
+                with self.subTest(feed=kwargs.get("feed", "sip")):
+                    with self.assertRaisesRegex(
+                        MonitorDataError, "trading-capable credentials forbidden",
+                    ) as caught:
+                        fetch_alpaca_raw_daily(**kwargs)
+                    self.assertNotIn("fictional-never-use-key", str(caught.exception))
+                    self.assertNotIn("fictional-never-use-secret", str(caught.exception))
+            getenv.assert_not_called()
+            opener.assert_not_called()
+            urlopen.assert_not_called()
+
+    def test_legacy_alpaca_refuses_before_parsing_inputs_even_without_keys(self):
+        with patch.dict(os.environ, {}, clear=True), patch(
+            "schd_monitor.data.os.getenv", side_effect=AssertionError(
+                "legacy adapter must never look up a key",
+            ),
+        ) as getenv, patch(
+            "schd_monitor.data.build_opener", side_effect=AssertionError(
+                "legacy adapter must never make HTTP requests",
+            ),
+        ) as opener:
+            for params in (
+                ("INVALID", "bad-date", "2038-06-14"),
+                (None, None, None),
+            ):
+                with self.subTest(params=params):
+                    with self.assertRaisesRegex(
+                        MonitorDataError, "Legacy Alpaca transport disabled",
+                    ):
+                        fetch_alpaca_raw_daily(*params, max_pages=1)
+            getenv.assert_not_called()
+            opener.assert_not_called()
 
 
 if __name__ == "__main__":
