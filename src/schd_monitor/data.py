@@ -6,9 +6,12 @@ import os
 from datetime import date
 from pathlib import Path
 from urllib.parse import urlencode
-from urllib.request import Request, urlopen
+from urllib.request import Request, urlopen, HTTPRedirectHandler, build_opener
 from urllib.error import HTTPError, URLError
 from .models import Bar, MonitorDataError, Position, validate_bars, validate_expected_sessions
+from .massive_offline_contract import (
+    MassiveDailyRequest, MassiveOfflineResponse, check_massive_offline_response,
+)
 
 
 def bars_from_csv(path: str | Path, *, expected_sessions: list[date] | None = None) -> list[Bar]:
@@ -89,3 +92,64 @@ def fetch_alpaca_raw_daily(symbol: str, start: str, end: str,
     else:raise MonitorDataError('Exceeded Alpaca pagination limit')
     validate_bars(bars)
     return bars
+
+# A separate, opt-in, READ-ONLY data-vendor transport. The existing Alpaca
+# experimental raw-price adapter above is NOT part of this path.
+MAX_MASSIVE_REST_BYTES = 4 * 1024 * 1024
+
+
+class _NoMassiveRedirect(HTTPRedirectHandler):
+    """Never forward a market-data credential to any redirect destination."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def fetch_massive_readonly_daily(request: MassiveDailyRequest) -> MassiveOfflineResponse:
+    """One bounded market-data-only HTTPS GET; no brokerage, file, or signal action.
+
+    An opt-in local MASSIVE_API_KEY is required. Even a successful vendor-shaped
+    response is UNATTESTED until independent market-data qualification gates.
+    """
+    if type(request) is not MassiveDailyRequest:
+        raise MonitorDataError("Explicit MassiveDailyRequest required")
+    key = os.environ.get("MASSIVE_API_KEY")
+    if (not isinstance(key, str) or not 1 <= len(key) <= 256
+            or any(ord(ch) < 33 or ord(ch) > 126 for ch in key)):
+        raise MonitorDataError("Local MASSIVE_API_KEY missing or unsafe; no request sent")
+    # Typed request validation prevents path/query injection or host override.
+    url = ("https://api.massive.com/" + "/".join(request.path_segments())
+           + "?" + urlencode(request.params()))
+    http_request = Request(url, headers={
+        "Authorization": "Bearer " + key,
+        "Accept": "application/json",
+        "User-Agent": "universal-etf-monitor/0.1 (market-data-only)",
+    }, method="GET")
+    try:
+        with build_opener(_NoMassiveRedirect()).open(http_request, timeout=20) as reply:
+            if reply.getcode() != 200:
+                raise MonitorDataError("Massive read-only HTTP status not successful")
+            raw = reply.read(MAX_MASSIVE_REST_BYTES + 1)
+    except (HTTPError, URLError, TimeoutError, OSError, ValueError):
+        # Vendor exceptions may reveal request details; never expose them.
+        raise MonitorDataError("Massive read-only HTTPS request failed") from None
+    if len(raw) > MAX_MASSIVE_REST_BYTES:
+        raise MonitorDataError("Massive REST body exceeds local size limit")
+
+    def unique_json_object(pairs):
+        obj = {}
+        for name, value in pairs:
+            if name in obj:
+                raise MonitorDataError("Duplicate Massive REST JSON key")
+            obj[name] = value
+        return obj
+
+    try:
+        payload = json.loads(raw.decode("utf-8"), object_pairs_hook=unique_json_object)
+    except MonitorDataError:
+        raise
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        raise MonitorDataError("Invalid Massive REST JSON response") from None
+    return check_massive_offline_response(
+        request=request, http_status=200, payload=payload
+    )
