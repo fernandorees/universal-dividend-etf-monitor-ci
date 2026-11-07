@@ -11,7 +11,9 @@ from schd_monitor.alpaca_offline_contract import AlpacaDailyRequest
 from schd_monitor.exchange_calendar import completed_xnys_sessions
 from schd_monitor.massive_offline_contract import MassiveDailyRequest
 from schd_monitor.models import MonitorDataError
-from schd_monitor.offline_provider_pair import audit_offline_alpaca_massive_pair
+from schd_monitor.offline_provider_pair import (
+    audit_offline_alpaca_massive_pair, preflight_offline_alpaca_massive_requests,
+)
 
 _NY = ZoneInfo("America/New_York")
 
@@ -70,6 +72,68 @@ class OfflineProviderPairTests(unittest.TestCase):
         data = self.sample()
         data.update(changes)
         return audit_offline_alpaca_massive_pair(**data)
+
+    def test_preflight_closed_session_bounds_before_any_provider_response(self):
+        baseline = self.sample()
+        got = preflight_offline_alpaca_massive_requests(
+            alpaca_request=baseline["alpaca_request"],
+            massive_request=baseline["massive_request"],
+            as_of=baseline["as_of"],
+        )
+        self.assertIsInstance(got, tuple)
+        self.assertGreater(len(got), 65)
+        self.assertEqual((got[0], got[-1]), (date(2024, 1, 2), date(2024, 5, 10)))
+        # Nontrading boundaries still resolve to the same complete sessions.
+        a = replace(baseline["alpaca_request"],
+                    start=date(2024, 1, 1), end=date(2024, 5, 11))
+        m = replace(baseline["massive_request"],
+                    start=date(2024, 1, 1), end=date(2024, 5, 11))
+        self.assertEqual(got, preflight_offline_alpaca_massive_requests(
+            alpaca_request=a, massive_request=m, as_of=baseline["as_of"],
+        ))
+
+    def test_preflight_refuses_unmatched_requests_and_naive_asof(self):
+        basis = self.sample()
+        call = {
+            "alpaca_request": basis["alpaca_request"],
+            "massive_request": basis["massive_request"],
+            "as_of": basis["as_of"],
+        }
+        with self.assertRaisesRegex(MonitorDataError, "Typed Alpaca"):
+            preflight_offline_alpaca_massive_requests(
+                **{**call, "alpaca_request": None})
+        with self.assertRaisesRegex(MonitorDataError, "symbol/date bounds"):
+            preflight_offline_alpaca_massive_requests(
+                **{**call, "massive_request": replace(
+                    call["massive_request"], symbol="OTHER")})
+        with self.assertRaisesRegex(MonitorDataError, "timezone-aware"):
+            preflight_offline_alpaca_massive_requests(
+                **{**call, "as_of": datetime(2024, 5, 11, 12)})
+
+    def test_preflight_fails_closed_for_stale_future_unfinished_and_no_session(self):
+        basis = self.sample()
+        call = {
+            "alpaca_request": basis["alpaca_request"],
+            "massive_request": basis["massive_request"],
+            "as_of": basis["as_of"],
+        }
+        for bad_end in (date(2024, 5, 9), date(2024, 5, 13)):
+            with self.subTest(requested_end=bad_end):
+                with self.assertRaisesRegex(MonitorDataError, "Session coverage mismatch"):
+                    preflight_offline_alpaca_massive_requests(
+                        **{**call,
+                           "alpaca_request": replace(call["alpaca_request"], end=bad_end),
+                           "massive_request": replace(call["massive_request"], end=bad_end)})
+        with self.assertRaisesRegex(MonitorDataError, "Session coverage mismatch"):
+            preflight_offline_alpaca_massive_requests(
+                **{**call, "as_of": datetime(2024, 5, 10, 18, 0, tzinfo=timezone.utc)})
+        with self.assertRaisesRegex(MonitorDataError, "no exchange sessions"):
+            preflight_offline_alpaca_massive_requests(
+                **{**call,
+                   "alpaca_request": replace(call["alpaca_request"],
+                       start=date(2024, 1, 1), end=date(2024, 1, 1)),
+                   "massive_request": replace(call["massive_request"],
+                       start=date(2024, 1, 1), end=date(2024, 1, 1))})
 
     def test_full_calendar_and_both_shapes_remain_unverified(self):
         result = self.check()
