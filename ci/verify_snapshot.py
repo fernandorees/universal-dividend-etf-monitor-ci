@@ -25,15 +25,15 @@ def verify() -> None:
             or document["scope"] != "APPROVED_PUBLIC_SYNTHETIC_SUBSET_ONLY"):
         raise ValueError("Unsupported or malformed public snapshot manifest")
     checksums = document["sha256"]
-    if type(checksums) is not dict or len(checksums) != 56:
-        raise ValueError("Manifest does not contain exactly 56 approved file hashes")
-    if sum(p.startswith("src/schd_monitor/") for p in checksums) != 28:
+    if type(checksums) is not dict or len(checksums) != 58:
+        raise ValueError("Manifest does not contain exactly 58 approved file hashes")
+    if sum(p.startswith("src/schd_monitor/") for p in checksums) != 29:
         raise ValueError("Public source allowlist count mismatch")
-    if sum(p.startswith("tests/") for p in checksums) != 23:
+    if sum(p.startswith("tests/") for p in checksums) != 24:
         raise ValueError("Public test allowlist count mismatch")
-    if document["source_file_count"] != 28 or document["synthetic_test_module_count"] != 23:
+    if document["source_file_count"] != 29 or document["synthetic_test_module_count"] != 24:
         raise ValueError("Unsupported published test/source scope")
-    approved_paths = set(['.github/workflows/ci.yml', '.gitignore', 'README.md', 'ci/verify_snapshot.py', 'pyproject.toml', 'src/schd_monitor/__init__.py', 'src/schd_monitor/__main__.py', 'src/schd_monitor/alpaca_offline_contract.py', 'src/schd_monitor/cli.py', 'src/schd_monitor/data.py', 'src/schd_monitor/dividend_audit.py', 'src/schd_monitor/exchange_calendar.py', 'src/schd_monitor/feed_integrity.py', 'src/schd_monitor/historical_champion.py', 'src/schd_monitor/indicators.py', 'src/schd_monitor/local_audit_index.py', 'src/schd_monitor/local_snapshot_receipt.py', 'src/schd_monitor/manual_ledger.py', 'src/schd_monitor/massive_offline_contract.py', 'src/schd_monitor/mechanics_probe.py', 'src/schd_monitor/models.py', 'src/schd_monitor/offline_provider_pair.py', 'src/schd_monitor/paper_accounting.py', 'src/schd_monitor/peak_audit.py', 'src/schd_monitor/publication_claim_gate.py', 'src/schd_monitor/reference_parity.py', 'src/schd_monitor/session_feed_gate.py', 'src/schd_monitor/signals.py', 'src/schd_monitor/snapshot_chain_guard.py', 'src/schd_monitor/snapshot_revision_guard.py', 'src/schd_monitor/split_audit.py', 'src/schd_monitor/synthetic_champion_bridge.py', 'src/schd_monitor/synthetic_trace_export.py', 'tests/test_alpaca_offline_contract.py', 'tests/test_dividend_audit.py', 'tests/test_engine.py', 'tests/test_exchange_calendar.py', 'tests/test_feed_integrity.py', 'tests/test_historical_champion.py', 'tests/test_local_audit_index.py', 'tests/test_local_snapshot_receipt.py', 'tests/test_manual_ledger.py', 'tests/test_massive_offline_contract.py', 'tests/test_mechanics_probe.py', 'tests/test_offline_provider_pair.py', 'tests/test_paper_accounting.py', 'tests/test_peak_audit.py', 'tests/test_publication_claim_gate.py', 'tests/test_reference_parity.py', 'tests/test_session_coverage.py', 'tests/test_session_feed_gate.py', 'tests/test_snapshot_chain_guard.py', 'tests/test_snapshot_revision_guard.py', 'tests/test_split_audit.py', 'tests/test_synthetic_champion_bridge.py', 'tests/test_synthetic_trace_export.py'])
+    approved_paths = set(['.github/workflows/ci.yml', '.gitignore', 'README.md', 'ci/verify_snapshot.py', 'pyproject.toml', 'src/schd_monitor/__init__.py', 'src/schd_monitor/__main__.py', 'src/schd_monitor/alpaca_offline_contract.py', 'src/schd_monitor/cli.py', 'src/schd_monitor/data.py', 'src/schd_monitor/dividend_audit.py', 'src/schd_monitor/exchange_calendar.py', 'src/schd_monitor/feed_integrity.py', 'src/schd_monitor/historical_champion.py', 'src/schd_monitor/indicators.py', 'src/schd_monitor/local_audit_index.py', 'src/schd_monitor/local_snapshot_receipt.py', 'src/schd_monitor/manual_ledger.py', 'src/schd_monitor/massive_offline_contract.py', 'src/schd_monitor/mechanics_probe.py', 'src/schd_monitor/models.py', 'src/schd_monitor/offline_provider_pair.py', 'src/schd_monitor/paper_accounting.py', 'src/schd_monitor/peak_audit.py', 'src/schd_monitor/publication_claim_gate.py', 'src/schd_monitor/reference_parity.py', 'src/schd_monitor/session_feed_gate.py', 'src/schd_monitor/sharadar_funds_offline_contract.py', 'src/schd_monitor/signals.py', 'src/schd_monitor/snapshot_chain_guard.py', 'src/schd_monitor/snapshot_revision_guard.py', 'src/schd_monitor/split_audit.py', 'src/schd_monitor/synthetic_champion_bridge.py', 'src/schd_monitor/synthetic_trace_export.py', 'tests/test_alpaca_offline_contract.py', 'tests/test_dividend_audit.py', 'tests/test_engine.py', 'tests/test_exchange_calendar.py', 'tests/test_feed_integrity.py', 'tests/test_historical_champion.py', 'tests/test_local_audit_index.py', 'tests/test_local_snapshot_receipt.py', 'tests/test_manual_ledger.py', 'tests/test_massive_offline_contract.py', 'tests/test_mechanics_probe.py', 'tests/test_offline_provider_pair.py', 'tests/test_paper_accounting.py', 'tests/test_peak_audit.py', 'tests/test_publication_claim_gate.py', 'tests/test_reference_parity.py', 'tests/test_session_coverage.py', 'tests/test_session_feed_gate.py', 'tests/test_sharadar_funds_offline_contract.py', 'tests/test_snapshot_chain_guard.py', 'tests/test_snapshot_revision_guard.py', 'tests/test_split_audit.py', 'tests/test_synthetic_champion_bridge.py', 'tests/test_synthetic_trace_export.py'])
     if set(checksums) != approved_paths:
         raise ValueError('Published path differs from owner-approved allowlist')
     for name, expected in checksums.items():
@@ -71,7 +71,7 @@ def verify() -> None:
         raise ValueError("Public tracked/visible file set differs from allowlist: "
                          + "unexpected=" + repr(extra) + " missing=" + repr(missing))
     print("APPROVED_PUBLIC_SYNTHETIC_SUBSET_SHA256_VERIFIED: "
-          "28 sources, 23 synthetic test modules, 56 SHA-256-bound files; "
+          "29 sources, 24 synthetic test modules, 58 SHA-256-bound files; "
           "NO private-repository provenance or operational signal attestation")
 
 
