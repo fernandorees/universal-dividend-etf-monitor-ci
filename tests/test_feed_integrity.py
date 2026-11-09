@@ -13,6 +13,7 @@ from pathlib import Path
 
 from schd_monitor.cli import main
 from schd_monitor.feed_integrity import (
+    MAX_FEED_DECLARATION_BYTES,
     FeedDeclaration, compare_offline_feeds, feed_declaration_from_json,
 )
 from schd_monitor.models import Bar, MonitorDataError
@@ -197,6 +198,76 @@ class TestOfflineFeedIntegrity(unittest.TestCase):
             manifest.write_text("{not json", encoding="utf-8")
             with self.assertRaisesRegex(MonitorDataError, "Invalid feed declaration JSON"):
                 feed_declaration_from_json(manifest)
+
+    def test_declaration_file_size_cap_is_inclusive(self):
+        with tempfile.TemporaryDirectory() as folder:
+            manifest = Path(folder) / "feed.json"
+            write_manifest(manifest, self.bars, "FICTIONAL_A")
+            original = manifest.read_bytes()
+            self.assertLess(len(original), MAX_FEED_DECLARATION_BYTES)
+            # Padding is valid JSON whitespace: exactly the cap is accepted.
+            manifest.write_bytes(
+                original + b" " * (MAX_FEED_DECLARATION_BYTES - len(original))
+            )
+            self.assertEqual(
+                feed_declaration_from_json(manifest).provider, "FICTIONAL_A"
+            )
+            manifest.write_bytes(
+                original + b" " * (MAX_FEED_DECLARATION_BYTES + 1 - len(original))
+            )
+            with self.assertRaisesRegex(MonitorDataError, "size limit"):
+                feed_declaration_from_json(manifest)
+
+    def test_declaration_bad_utf8_unavailable_path_and_invalid_path_type(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            manifest = root / "feed.json"
+            manifest.write_bytes(b'{"provider":"' + bytes([255]) + b'"}')
+            with self.assertRaisesRegex(MonitorDataError, "valid UTF-8"):
+                feed_declaration_from_json(manifest)
+            for bad_path in (root / "missing.json", root, None):
+                with self.subTest(path=str(bad_path)):
+                    with self.assertRaisesRegex(
+                        MonitorDataError, "unavailable or unreadable"
+                    ):
+                        feed_declaration_from_json(bad_path)
+
+    def test_cli_bad_declaration_bytes_refuse_new_signal_export(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            bars = root / "bars.csv"
+            primary_m = root / "primary.json"
+            secondary_m = root / "secondary.json"
+            position, output = root / "position.json", root / "signal.json"
+            write_bars(bars, self.bars)
+            write_manifest(primary_m, self.bars, "FICTIONAL_A")
+            write_manifest(secondary_m, self.bars, "FICTIONAL_B")
+            position.write_text(json.dumps({
+                "symbol": "SCHD", "shares": 0, "available_cash": 2000,
+                "peak_close": None,
+                "reconciled_through": self.bars[-1].session.isoformat(),
+            }), encoding="utf-8")
+            original = primary_m.read_bytes()
+            for corrupted, expected in (
+                (original + bytes([255]), "valid UTF-8"),
+                (original + b" " * MAX_FEED_DECLARATION_BYTES, "size limit"),
+            ):
+                with self.subTest(expected=expected):
+                    primary_m.write_bytes(corrupted)
+                    stderr = io.StringIO()
+                    with contextlib.redirect_stderr(stderr):
+                        code = main([
+                            "--csv", str(bars),
+                            "--position", str(position),
+                            "--secondary-csv", str(bars),
+                            "--primary-feed-declaration", str(primary_m),
+                            "--secondary-feed-declaration", str(secondary_m),
+                            "--output", str(output),
+                        ])
+                    self.assertEqual(code, 2)
+                    self.assertIn("NO_VERIFIED_SIGNAL", stderr.getvalue())
+                    self.assertIn(expected, stderr.getvalue())
+                    self.assertFalse(output.exists())
 
     def test_manifest_rejects_duplicate_json_keys_even_when_last_value_is_valid(self):
         with tempfile.TemporaryDirectory() as folder:
