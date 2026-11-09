@@ -57,8 +57,10 @@
     "tests/test_snapshot_revision_guard.py": "19c9d72601661e1e80c61668d09d55d96cde8271181bb2088dbdf6fa9f4ff38d",
     "tests/test_split_audit.py": "a565390c3947dde3913867507b013476ecdb311dc18e8a0073af0c113cf7c999",
     "tests/test_synthetic_champion_bridge.py": "b0a48b13ad60fb6331117f5030865554746bad88971fd665b11cce6d1a31159b",
-    "tests/test_synthetic_trace_export.py": "9b13bbc7e02b40566d4c1604059004d5f95fadc2842b4ff7bc3e649a2983e69b"
+    "tests/test_synthetic_trace_export.py": "9b13bbc7e02b40566d4c1604059004d5f95fadc2842b4ff7bc3e649a2983e69b",
+    "src/schd_monitor/sharadar_funds_offline_contract.py": "db8752d936bab6e527ee5b2c74dfdb0efc18a6370c8d9e0ba52ee3ff484d46d2",
+    "tests/test_sharadar_funds_offline_contract.py": "2b4b0b962b4a2baff6a6ef999702add9661a9774ecbcd0a18ad0039f80e842ea"
   },
-  "source_file_count": 28,
-  "synthetic_test_module_count": 23
+  "source_file_count": 29,
+  "synthetic_test_module_count": 24
 }
