@@ -198,6 +198,61 @@ class TestOfflineFeedIntegrity(unittest.TestCase):
             with self.assertRaisesRegex(MonitorDataError, "Invalid feed declaration JSON"):
                 feed_declaration_from_json(manifest)
 
+    def test_manifest_rejects_duplicate_json_keys_even_when_last_value_is_valid(self):
+        with tempfile.TemporaryDirectory() as folder:
+            manifest = Path(folder) / "feed.json"
+            write_manifest(manifest, self.bars, "FICTIONAL_A")
+            original = manifest.read_text(encoding="utf-8")
+            for target, replacement in (
+                ('"provider": "FICTIONAL_A"',
+                 '"provider": "FORGED", "provider": "FICTIONAL_A"'),
+                ('"adjustment": "SPLIT_ONLY"',
+                 '"adjustment": "RAW", "adjustment": "SPLIT_ONLY"'),
+                ('"schema_version": 1',
+                 '"schema_version": 1, "schema_version": 1'),
+                ('"last_complete_session": "' + self.bars[-1].session.isoformat() + '"',
+                 '"last_complete_session": "2000-01-01", "last_complete_session": "'
+                 + self.bars[-1].session.isoformat() + '"'),
+            ):
+                with self.subTest(field=target):
+                    self.assertIn(target, original)
+                    manifest.write_text(original.replace(target, replacement), encoding="utf-8")
+                    with self.assertRaisesRegex(MonitorDataError, "Duplicate feed declaration JSON"):
+                        feed_declaration_from_json(manifest)
+
+    def test_cli_duplicate_provider_field_fails_without_signal_export(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            first, second = root / "a.csv", root / "b.csv"
+            primary_meta, secondary_meta = root / "a.json", root / "b.json"
+            position, output = root / "position.json", root / "signal.json"
+            write_bars(first, self.bars)
+            write_bars(second, self.bars)
+            write_manifest(primary_meta, self.bars, "FICTIONAL_A")
+            write_manifest(secondary_meta, self.bars, "FICTIONAL_B")
+            raw = primary_meta.read_text(encoding="utf-8")
+            self.assertIn('"provider": "FICTIONAL_A"', raw)
+            primary_meta.write_text(
+                raw.replace('"provider": "FICTIONAL_A"',
+                            '"provider": "FORGED", "provider": "FICTIONAL_A"'),
+                encoding="utf-8",
+            )
+            position.write_text(json.dumps({
+                "symbol": "SCHD", "shares": 0, "available_cash": 2000,
+                "peak_close": None, "reconciled_through": self.bars[-1].session.isoformat(),
+            }), encoding="utf-8")
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                result = main(["--csv", str(first), "--position", str(position),
+                               "--secondary-csv", str(second),
+                               "--primary-feed-declaration", str(primary_meta),
+                               "--secondary-feed-declaration", str(secondary_meta),
+                               "--output", str(output)])
+            self.assertEqual(result, 2)
+            self.assertIn("NO_VERIFIED_SIGNAL", stderr.getvalue())
+            self.assertIn("Duplicate feed declaration JSON", stderr.getvalue())
+            self.assertFalse(output.exists())
+
     def test_cli_rejects_partial_dual_source_flags(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

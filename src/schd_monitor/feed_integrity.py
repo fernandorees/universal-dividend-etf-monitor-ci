@@ -44,10 +44,23 @@ class FeedDeclaration:
             raise MonitorDataError("Feed last_complete_session must be a date")
 
 
+def _unique_feed_json_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    """Reject ambiguous JSON, including duplicate keys with identical values."""
+    fields: dict[str, object] = {}
+    for name, value in pairs:
+        if name in fields:
+            raise MonitorDataError("Duplicate feed declaration JSON field")
+        fields[name] = value
+    return fields
+
+
 def feed_declaration_from_json(path: str | Path) -> FeedDeclaration:
     """Read self-declared metadata; this does not authenticate its claims."""
     try:
-        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+        payload = json.loads(
+            Path(path).read_text(encoding="utf-8"),
+            object_pairs_hook=_unique_feed_json_keys,
+        )
     except json.JSONDecodeError as exc:
         raise MonitorDataError("Invalid feed declaration JSON") from exc
     required = {"schema_version", "provider", "symbol", "adjustment", "last_complete_session"}
