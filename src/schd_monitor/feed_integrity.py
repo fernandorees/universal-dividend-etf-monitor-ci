@@ -18,6 +18,9 @@ from .models import Bar, MonitorDataError, validate_bars
 # Review against genuine provider conventions BEFORE adopting any production policy.
 MAX_RELATIVE_OHLC_DIFFERENCE = 0.0001
 FEED_DECLARATION_SCHEMA = 1
+# One five-field, local, self-declared JSON record needs no unbounded input.
+# Read at most one byte beyond the cap to detect truncation before JSON parse.
+MAX_FEED_DECLARATION_BYTES = 64 * 1024
 # Identifier labels are untrusted metadata: forbid whitespace, control chars,
 # Unicode lookalikes, paths and unbounded strings in audit output.
 _PROVIDER_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
@@ -55,14 +58,27 @@ def _unique_feed_json_keys(pairs: list[tuple[str, object]]) -> dict[str, object]
 
 
 def feed_declaration_from_json(path: str | Path) -> FeedDeclaration:
-    """Read self-declared metadata; this does not authenticate its claims."""
+    """Read bounded self-declared local JSON; this cannot authenticate claims."""
+    try:
+        with Path(path).open("rb") as source:
+            raw = source.read(MAX_FEED_DECLARATION_BYTES + 1)
+    except (OSError, TypeError, ValueError) as exc:
+        raise MonitorDataError("Feed declaration file unavailable or unreadable") from exc
+    if len(raw) > MAX_FEED_DECLARATION_BYTES:
+        raise MonitorDataError("Feed declaration JSON exceeds local size limit")
     try:
         payload = json.loads(
-            Path(path).read_text(encoding="utf-8"),
-            object_pairs_hook=_unique_feed_json_keys,
+            raw.decode("utf-8"), object_pairs_hook=_unique_feed_json_keys,
         )
+    except UnicodeDecodeError as exc:
+        raise MonitorDataError("Feed declaration JSON must be valid UTF-8") from exc
     except json.JSONDecodeError as exc:
         raise MonitorDataError("Invalid feed declaration JSON") from exc
+    except MonitorDataError:
+        # Preserve exact duplicate-key refusal from object_pairs_hook.
+        raise
+    except (ValueError, RecursionError) as exc:
+        raise MonitorDataError("Invalid feed declaration JSON structure or value") from exc
     required = {"schema_version", "provider", "symbol", "adjustment", "last_complete_session"}
     if not isinstance(payload, dict) or set(payload) != required:
         raise MonitorDataError("Feed declaration requires exactly the versioned metadata fields")
