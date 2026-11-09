@@ -13,6 +13,10 @@ from schd_monitor.massive_offline_contract import MassiveDailyRequest
 from schd_monitor.models import MonitorDataError
 from schd_monitor.offline_provider_pair import (
     audit_offline_alpaca_massive_pair, preflight_offline_alpaca_massive_requests,
+    audit_offline_sharadar_massive_pair, preflight_offline_sharadar_massive_requests,
+)
+from schd_monitor.sharadar_funds_offline_contract import (
+    MAX_SHARADAR_FUNDS_ROWS, SharadarFundsRequest,
 )
 
 _NY = ZoneInfo("America/New_York")
@@ -294,6 +298,203 @@ class OfflineProviderPairTests(unittest.TestCase):
                     MonitorDataError, "request calendar coverage"
                 ):
                     audit_offline_alpaca_massive_pair(**data)
+
+
+
+
+
+def _fictional_sharadar_massive():
+    """Both invented tables share prices but NOT authenticated upstream data."""
+    prior = _mock_payloads()
+    sessions = completed_xnys_sessions(date(2024, 1, 2), prior["as_of"])
+    invented = []
+    for session, a in zip(sessions, prior["alpaca_payload"]["bars"]):
+        invented.append({
+            "ticker": "MOCK", "date": session.isoformat(),
+            "open": a["o"], "high": a["h"], "low": a["l"],
+            "close": a["c"], "volume": a["v"],
+            "lastupdated": session.isoformat(),  # Untrusted date, not finality.
+        })
+    return {
+        "sharadar_request": SharadarFundsRequest(
+            symbol="MOCK", start=date(2024, 1, 2), end=sessions[-1],
+        ),
+        "sharadar_rows": invented,
+        "massive_request": prior["massive_request"],
+        "massive_http_status": prior["massive_http_status"],
+        "massive_payload": prior["massive_payload"],
+        "as_of": prior["as_of"],
+    }
+
+
+class SharadarMassiveOfflinePairTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.basis = _fictional_sharadar_massive()
+
+    def sample(self):
+        return copy.deepcopy(self.basis)
+
+    def check(self, **changes):
+        data = self.sample()
+        data.update(changes)
+        return audit_offline_sharadar_massive_pair(**data)
+
+    def test_all_calendar_sessions_complete_but_every_trust_flag_false(self):
+        report = self.check()
+        self.assertEqual(
+            report.status, "SHARADAR_MASSIVE_OFFLINE_COMPOSED_UNATTESTED",
+        )
+        self.assertEqual(report.schema_version, 1)
+        self.assertEqual(report.trading_status, "UNVERIFIED_DO_NOT_TRADE")
+        self.assertEqual(report.first_session, "2024-01-02")
+        self.assertEqual(report.last_completed_session, "2024-05-10")
+        self.assertEqual(report.sessions_compared, len(self.basis["sharadar_rows"]))
+        self.assertGreater(report.sessions_compared, 65)
+        self.assertEqual(report.max_relative_ohlc_difference, 0)
+        self.assertEqual(
+            report.calendar_and_two_feed_gate_status,
+            "CALENDAR_COMPLETE_DUAL_FEED_CONSISTENT_UNATTESTED",
+        )
+        self.assertEqual(
+            report.massive_claimed_server_request_id, "fictional-request-123",
+        )
+        for field in (
+            "sharadar_request_sha256", "sharadar_fictional_rows_sha256",
+            "massive_request_sha256", "massive_response_sha256",
+        ):
+            self.assertEqual(len(getattr(report, field)), 64)
+        for name in (
+            "provider_identity_verified", "feed_independence_verified",
+            "vendor_bar_finality_verified", "split_and_dividend_basis_verified",
+            "manual_position_reconciled", "production_signals_verified",
+        ):
+            self.assertIs(getattr(report, name), False)
+            self.assertIs(report.as_json()[name], False)
+        self.assertFalse(any(
+            k == "bars" or k.endswith("_rows") or "payload" in k
+            for k in report.as_json()
+        ))
+
+    def test_matching_typed_inert_requests_and_completion_preflight(self):
+        data = self.sample()
+        expected = preflight_offline_sharadar_massive_requests(
+            sharadar_request=data["sharadar_request"],
+            massive_request=data["massive_request"], as_of=data["as_of"],
+        )
+        self.assertEqual(expected[0], date(2024, 1, 2))
+        self.assertEqual(expected[-1], date(2024, 5, 10))
+        self.assertEqual(len(expected), len(data["sharadar_rows"]))
+        for patch in (
+            {"sharadar_request": None},
+            {"massive_request": None},
+        ):
+            with self.subTest(patch=patch), self.assertRaisesRegex(
+                MonitorDataError, "Typed Sharadar FUNDS and Massive",
+            ):
+                self.check(**patch)
+
+    def test_reject_mismatched_symbol_start_or_end_before_row_review(self):
+        for patch in (
+            {"sharadar_request": replace(
+                self.basis["sharadar_request"], symbol="OTHER")},
+            {"massive_request": replace(
+                self.basis["massive_request"], start=date(2024, 1, 3))},
+            {"massive_request": replace(
+                self.basis["massive_request"], end=date(2024, 5, 9))},
+        ):
+            with self.subTest(patch=patch), self.assertRaisesRegex(
+                MonitorDataError, "symbol/date bounds differ",
+            ):
+                self.check(**patch)
+
+    def test_reject_stale_future_or_unfinished_calendar_and_naive_asof(self):
+        a = self.basis["sharadar_request"]
+        m = self.basis["massive_request"]
+        for end in (date(2024, 5, 9), date(2024, 5, 13)):
+            with self.subTest(end=end), self.assertRaisesRegex(
+                MonitorDataError, "not exactly closed sessions",
+            ):
+                self.check(sharadar_request=replace(a, end=end),
+                           massive_request=replace(m, end=end))
+        with self.assertRaisesRegex(MonitorDataError, "not exactly closed sessions"):
+            self.check(as_of=datetime(2024, 5, 10, 18, tzinfo=timezone.utc))
+        with self.assertRaisesRegex(MonitorDataError, "timezone-aware"):
+            self.check(as_of=datetime(2024, 5, 11, 12))
+
+    def test_weekend_and_holiday_selection_bounds_remain_complete(self):
+        a = replace(self.basis["sharadar_request"], start=date(2024, 1, 1),
+                    end=date(2024, 5, 11))
+        m = replace(self.basis["massive_request"], start=date(2024, 1, 1),
+                    end=date(2024, 5, 11))
+        report = self.check(sharadar_request=a, massive_request=m)
+        self.assertEqual(report.sessions_compared, self.check().sessions_compared)
+        self.assertNotEqual(
+            report.sharadar_request_sha256, self.check().sharadar_request_sha256,
+        )
+        self.assertFalse(report.production_signals_verified)
+
+    def test_reject_shared_missing_first_last_or_middle_session(self):
+        for point in (0, 22, -1):
+            with self.subTest(point=point):
+                data = self.sample()
+                data["sharadar_rows"].pop(point)
+                data["massive_payload"]["results"].pop(point)
+                for key in ("queryCount", "resultsCount", "count"):
+                    data["massive_payload"][key] -= 1
+                with self.assertRaisesRegex(
+                    MonitorDataError, "request calendar coverage mismatch",
+                ):
+                    audit_offline_sharadar_massive_pair(**data)
+
+    def test_reject_ohlc_conflict_and_retained_small_difference(self):
+        data = self.sample()
+        data["massive_payload"]["results"][23]["c"] += .03
+        with self.assertRaisesRegex(MonitorDataError, "Feed OHLC mismatch"):
+            audit_offline_sharadar_massive_pair(**data)
+        data = self.sample()
+        data["massive_payload"]["results"][23]["c"] += .00001
+        report = audit_offline_sharadar_massive_pair(**data)
+        self.assertGreater(report.max_relative_ohlc_difference, 0)
+        self.assertFalse(report.feed_independence_verified)
+        self.assertFalse(report.production_signals_verified)
+
+    def test_reject_sharadar_extra_adjustment_bad_date_and_incomplete_page(self):
+        for field, value, expected in (
+            ("closeadj", 999, "fields"),
+            ("closeunadj", 999, "fields"),
+            ("lastupdated", "bad", "lastupdated"),
+            ("volume", -1, "volume"),
+            ("date", "2024-01-06", "Weekend"),
+        ):
+            with self.subTest(field=field):
+                data = self.sample()
+                # Place the weekend between Friday and Monday so the
+                # ordering guard does not mask the weekend-date failure.
+                target = (next(row for row in data["sharadar_rows"]
+                               if row["date"] == "2024-05-03")
+                          if field == "date" else data["sharadar_rows"][0])
+                target[field] = ("2024-05-04" if field == "date" else value)
+                with self.assertRaisesRegex(MonitorDataError, expected):
+                    audit_offline_sharadar_massive_pair(**data)
+        with self.assertRaisesRegex(MonitorDataError, "nonempty list"):
+            self.check(sharadar_rows=None)
+        data = self.sample()
+        data["sharadar_rows"] = [data["sharadar_rows"][0]] * MAX_SHARADAR_FUNDS_ROWS
+        with self.assertRaisesRegex(MonitorDataError, "pagination"):
+            audit_offline_sharadar_massive_pair(**data)
+
+    def test_reject_massive_denial_unadjusted_or_claimed_next_page(self):
+        with self.assertRaisesRegex(MonitorDataError, "HTTP status"):
+            self.check(massive_http_status=429)
+        data = self.sample()
+        data["massive_payload"]["adjusted"] = False
+        with self.assertRaisesRegex(MonitorDataError, "split-adjusted"):
+            audit_offline_sharadar_massive_pair(**data)
+        data = self.sample()
+        data["massive_payload"]["next_url"] = "https://invalid.example"
+        with self.assertRaisesRegex(MonitorDataError, "pagination"):
+            audit_offline_sharadar_massive_pair(**data)
 
 
 if __name__ == "__main__":
